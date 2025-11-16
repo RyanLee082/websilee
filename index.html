@@ -3,44 +3,227 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>測試頁面</title>
+    <title>TensorFlow.js 即時影像辨識 (行動版)</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@latest/dist/coco-ssd.min.js"></script>
+    
     <style>
-        /* 這是一些基本的 CSS 樣式 */
         body {
             font-family: Arial, sans-serif;
-            margin: 40px;
-            background-color: #f4f4f4;
-            color: #333;
-        }
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 10px; /* 調整邊距 */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
         }
         h1 {
-            color: #0056b3;
+            color: #333;
+            font-size: 1.5em; /* 調整字體大小 */
+        }
+        p {
+            text-align: center;
+        }
+
+        /* * --- CSS 修改 ---
+         * 1. 容器改用 100% 寬度，並設定最大寬度，使其在電腦和手機上都能正常顯示。
+         * 2. video 元素成為 "基準"，寬度 100%，高度自動。
+         * 3. canvas 元素 "絕對定位" 浮在 video 上方，並填滿 100%。
+        */
+        #live-container {
+            position: relative;
+            border: 2px solid #555;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            width: 100%; /* 修改：填滿寬度 */
+            max-width: 640px; /* 修改：設定最大寬度 */
+            margin: 10px 0;
+        }
+
+        #video {
+            /* 修改：video 不再是 absolute，它是響應式的基準 */
+            width: 100%;
+            height: auto;
+            display: block; /* 移除 video 下方的小空間 */
+            /* 讓影像水平翻轉，鏡頭畫面看起來比較直觀 */
+            transform: scaleX(-1);
+        }
+
+        #canvas {
+            /* 修改：canvas 絕對定位並 100% 蓋在 video 上方 */
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10; /* 確保 canvas 在最上層 */
+        }
+
+        #status {
+            margin-top: 15px;
+            font-size: 1.1em; /* 調整字體 */
+            font-weight: bold;
+            color: #d9534f;
+            text-align: center;
         }
     </style>
 </head>
 <body>
 
-    <div class="container">
-        <h1>這是一個測試網頁</h1>
-        
-        <p>這是一個段落。您可以用這個檔案來測試您的 HTML、CSS 或 JavaScript 功能。</p>
-        
-        <button onclick="showAlert()">點我測試 JavaScript</button>
+    <h1>Webcam 即時物件偵測</h1>
+    <p>使用 TensorFlow.js (COCO-SSD 模型)</p>
+
+    <div id="status">正在載入模型並啟動攝影機...</div>
+
+    <div id="live-container">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="canvas"></canvas>
     </div>
 
     <script>
-        // 這是一段簡單的 JavaScript
-        function showAlert() {
-            alert('JavaScript 運作正常！');
-        }
-    </script>
+        // 取得 DOM 元素
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const statusDisplay = document.getElementById('status');
+        const ctx = canvas.getContext('2d');
 
+        let model = null;
+
+        // --- JS 修改 1：啟動攝影機 ---
+        // 優先嘗試後置鏡頭 (environment)，如果失敗 (例如在桌機上) 再嘗試預設鏡頭
+        async function setupWebcam() {
+            const mobileConstraints = {
+                video: { 
+                    facingMode: 'environment' // 優先使用後置鏡頭
+                },
+                audio: false
+            };
+            const defaultConstraints = {
+                video: true,
+                audio: false
+            };
+
+            try {
+                // 優先嘗試手機的後置鏡頭
+                const stream = await navigator.mediaDevices.getUserMedia(mobileConstraints);
+                video.srcObject = stream;
+            } catch (err) {
+                console.warn("後置鏡頭啟動失敗, 嘗試預設鏡頭: ", err);
+                try {
+                    // 嘗試預設 (可能是前置鏡頭或桌機鏡頭)
+                    const stream = await navigator.mediaDevices.getUserMedia(defaultConstraints);
+                    video.srcObject = stream;
+                } catch (err2) {
+                    console.error("無法啟動攝影機: ", err2);
+                    statusDisplay.innerHTML = `錯誤：無法啟動攝影機 (${err2.message})<br>請允許瀏覽器存取攝影機並重新整理。`;
+                    return; // 停止執行
+                }
+            }
+            
+            // 等待影像串流載入完成
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve();
+                };
+            });
+        }
+
+        // 執行辨識的函式
+        async function runDetection() {
+            if (!model || !video.srcObject) return;
+
+            // --- JS 修改 2：座標縮放 ---
+            // 偵測模型需要影像的 "原始尺寸" (video.videoWidth)
+            // 但我們繪圖時需要 "顯示尺寸" (canvas.width)
+            // 所以我們需要計算縮放比例
+            const scaleX = canvas.width / video.videoWidth;
+            const scaleY = canvas.height / video.videoHeight;
+
+            // 1. 偵測影像中的物體
+            const predictions = await model.detect(video);
+
+            // 2. 清除上一次的繪製結果
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 3. 設定繪圖樣式
+            ctx.strokeStyle = "#00FF00";
+            ctx.lineWidth = 2;
+            ctx.fillStyle = "#00FF00";
+            ctx.font = "16px Arial";
+
+            // 4. 迭代所有預測結果並 *縮放* 繪製
+            predictions.forEach(prediction => {
+                // 取得原始座標
+                const [x, y, width, height] = prediction.bbox;
+
+                // --- JS 修改 3：套用縮放比例 ---
+                const scaledX = x * scaleX;
+                const scaledY = y * scaleY;
+                const scaledWidth = width * scaleX;
+                const scaledHeight = height * scaleY;
+
+                // 由於影像水平翻轉了，我們也必須翻轉 canvas 的 X 座標
+                const flippedX = canvas.width - scaledX - scaledWidth;
+
+                // 繪製框框 (使用縮放後的座標)
+                ctx.strokeRect(flippedX, scaledY, scaledWidth, scaledHeight);
+                
+                // 繪製標籤
+                const label = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
+                ctx.fillText(label, flippedX + 5, scaledY + 20);
+            });
+
+            // 5. 循環執行
+            requestAnimationFrame(runDetection);
+        }
+
+        // --- JS 修改 4：設定 Canvas 尺寸與 RWD ---
+        // 這個函式用來設定 canvas 的繪圖緩衝區尺寸
+        // 必須符合 video "顯示" 在螢幕上的尺寸
+        function resizeCanvas() {
+            if (!video.srcObject) return;
+            
+            // 讓 canvas 的畫布大小 = video 在網頁上顯示的大小
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+            console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
+        }
+
+        // --- 主程式執行 ---
+        async function main() {
+            // 1. 載入 COCO-SSD 模型
+            statusDisplay.innerHTML = "正在載入 COCO-SSD 模型...";
+            try {
+                model = await cocoSsd.load();
+            } catch (err) {
+                console.error("載入模型失敗: ", err);
+                statusDisplay.innerHTML = "錯誤：載入模型失敗。";
+                return;
+            }
+
+            // 2. 啟動攝影機
+            statusDisplay.innerHTML = "正在啟動攝影機...";
+            await setupWebcam();
+            
+            // 如果 setupWebcam 失敗 (e.g. video.srcObject 是 null), 就不繼續
+            if (!video.srcObject) return; 
+
+            // 3. 設定 canvas 尺寸
+            // 確保 video 載入完成後再設定
+            resizeCanvas();
+
+            // --- JS 修改 5：新增 resize 事件監聽 ---
+            // 當使用者旋轉手機或改變視窗大小時，重新調整 canvas 尺寸
+            window.addEventListener("resize", resizeCanvas);
+            
+            // 4. 隱藏狀態訊息，開始執行辨識
+            statusDisplay.style.display = 'none';
+            runDetection();
+        }
+
+        // 啟動主程式
+        main();
+    </script>
 </body>
 </html>
