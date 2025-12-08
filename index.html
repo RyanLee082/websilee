@@ -1,229 +1,433 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TensorFlow.js 即時影像辨識 (行動版)</title>
-    
+    <title>即時物件偵測掃描</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@latest/dist/coco-ssd.min.js"></script>
-    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
     <style>
+        :root {
+            --primary-color: #2196F3; /* 改個顏色區分，這是科技藍 */
+            --bg-color: #f0f2f5;
+        }
+
         body {
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
             margin: 0;
-            padding: 10px; /* 調整邊距 */
+            padding: 0;
+            background-color: var(--bg-color);
             display: flex;
             flex-direction: column;
             align-items: center;
+            min-height: 100vh;
         }
-        h1 {
-            color: #333;
-            font-size: 1.5em; /* 調整字體大小 */
-        }
-        p {
+
+        .page {
+            display: none;
+            width: 100%;
+            max-width: 600px;
+            padding: 20px;
+            box-sizing: border-box;
             text-align: center;
         }
 
-        /* * --- CSS 修改 ---
-         * 1. 容器改用 100% 寬度，並設定最大寬度，使其在電腦和手機上都能正常顯示。
-         * 2. video 元素成為 "基準"，寬度 100%，高度自動。
-         * 3. canvas 元素 "絕對定位" 浮在 video 上方，並填滿 100%。
-        */
-        #live-container {
-            position: relative;
-            border: 2px solid #555;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-            width: 100%; /* 修改：填滿寬度 */
-            max-width: 640px; /* 修改：設定最大寬度 */
-            margin: 10px 0;
+        .active { display: block; }
+
+        /* 按鈕樣式 */
+        .home-btn-container {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            height: 80vh;
+            gap: 20px;
         }
 
-        #video {
-            /* 修改：video 不再是 absolute，它是響應式的基準 */
+        button {
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            border: none;
+            border-radius: 50px;
+            background-color: var(--primary-color);
+            color: white;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+
+        button:active { transform: scale(0.95); }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        /* 圖鑑樣式 */
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            padding-bottom: 50px;
+        }
+
+        .card-item {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            cursor: pointer;
+        }
+
+        .card-item img {
             width: 100%;
             height: auto;
-            display: block; /* 移除 video 下方的小空間 */
-            /* 讓影像水平翻轉，鏡頭畫面看起來比較直觀 */
-            transform: scaleX(-1);
+            display: block;
         }
 
-        #canvas {
-            /* 修改：canvas 絕對定位並 100% 蓋在 video 上方 */
+        /* 浮動視窗 */
+        #modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 30px;
+            border-radius: 15px;
+            width: 80%;
+            max-width: 400px;
+            position: relative;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            text-align: left;
+        }
+
+        .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .modal-img {
+            width: 100%;
+            max-width: 200px;
+            display: block;
+            margin: 0 auto 15px auto;
+        }
+
+        /* 掃描頁面專用樣式 (重疊 Video 和 Canvas) */
+        #cam-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 480px; /* 限制相機寬度 */
+            margin: 0 auto 20px auto;
+            border-radius: 15px;
+            overflow: hidden;
+            background: black;
+            aspect-ratio: 3/4; /* 預設比例，避免載入前塌陷 */
+        }
+
+        #webcam {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        #overlay {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            z-index: 10; /* 確保 canvas 在最上層 */
+            z-index: 10; /* Canvas 在 Video 上方 */
         }
 
-        #status {
-            margin-top: 15px;
-            font-size: 1.1em; /* 調整字體 */
-            font-weight: bold;
-            color: #d9534f;
-            text-align: center;
+        /* 結果頁面圖片 */
+        #result-snapshot {
+            width: 100%;
+            max-width: 300px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+            border: 3px solid var(--primary-color);
         }
+        
+        .back-btn { background-color: #666; margin-top: 10px; }
     </style>
 </head>
 <body>
 
-    <h1>Webcam 即時物件偵測</h1>
-    <p>使用 TensorFlow.js (COCO-SSD 模型)</p>
+    <div id="home-page" class="page active">
+        <h1>物件偵測掃描器</h1>
+        <div class="home-btn-container">
+            <button onclick="goToGallery()">卡牌圖鑑</button>
+            <button onclick="goToScanner()">啟動相機 (COCO-SSD)</button>
+        </div>
+    </div>
 
-    <div id="status">正在載入模型並啟動攝影機...</div>
+    <div id="gallery-page" class="page">
+        <h2>卡牌圖鑑</h2>
+        <div class="gallery-grid" id="gallery-grid"></div>
+        <button class="back-btn" onclick="goHome()">返回首頁</button>
+    </div>
 
-    <div id="live-container">
-        <video id="video" autoplay muted playsinline></video>
-        <canvas id="canvas"></canvas>
+    <div id="scan-page" class="page">
+        <h2>即時偵測中</h2>
+        
+        <div id="cam-wrapper">
+            <video id="webcam" playsinline muted autoplay></video>
+            <canvas id="overlay"></canvas>
+        </div>
+
+        <div id="loading-text">正在載入 COCO-SSD 模型...</div>
+        <div id="status-text" style="color: #666; margin-bottom: 10px; height: 1.2em;"></div>
+        
+        <button id="scan-btn" onclick="captureAndResult()" disabled>拍照並查看結果</button>
+        <br><br>
+        <button class="back-btn" onclick="stopWebcamAndGoHome()">返回首頁</button>
+    </div>
+
+    <div id="result-page" class="page">
+        <h2>偵測結果 snapshot</h2>
+        <img id="result-snapshot" src="">
+        
+        <div class="modal-content" style="margin: 0 auto; background: rgba(255,255,255,0.9);">
+            <h3>偵測到的物件：</h3>
+            <div id="result-list" style="font-size: 1.1rem; color: #333;"></div>
+            <p style="font-size: 0.8rem; color: #999; margin-top: 15px;">
+                * COCO-SSD 為通用模型，可能將卡牌誤判為 book, cell phone 等物品。
+            </p>
+        </div>
+        <br>
+        <button onclick="goToScanner()">重新掃描</button>
+        <button class="back-btn" onclick="goHome()">返回首頁</button>
+    </div>
+
+    <div id="modal">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeModal()">&times;</span>
+            <img id="modal-img-display" class="modal-img" src="">
+            <div id="modal-desc" style="line-height: 1.6;"></div>
+        </div>
     </div>
 
     <script>
-        // 取得 DOM 元素
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
-        const statusDisplay = document.getElementById('status');
+        // --- 圖鑑資料 (不變) ---
+        const cardData = [
+            { id: 1, desc: "屬性:草 編號: 0406 卡包: M2aF 進化標記:基礎" },
+            { id: 2, desc: "屬性:寶可夢道具 卡包:M2aF" },
+            { id: 3, desc: "屬性:支援者 卡包:M2aF" },
+            { id: 4, desc: "屬性:龍 編號:0887 卡包:M2aF 進化標記:太晶EX" },
+            { id: 5, desc: "屬性:龍 編號:0886 卡包:M2aF 進化標記:1階進化" },
+            { id: 6, desc: "屬性:龍 編號:0885 卡包:M2aF 進化標記:基礎" },
+            { id: 7, desc: "屬性:龍 編號:0148 卡包:M2aF 進化標記:1階進化" },
+            { id: 8, desc: "屬性:龍 編號:0149 卡包:M2aF 進化標記:超級進化EX" },
+            { id: 9, desc: "屬性:龍 編號:0147 卡包:M2aF 進化標記:基礎" },
+            { id: 10, desc: "屬性:電 編號:0603 卡包:M2aF 進化標記:1階進化" },
+            { id: 11, desc: "屬性:電 編號:0602 卡包:M2aF 進化標記:基礎" },
+            { id: 12, desc: "屬性:電 編號:0604 卡包:M2aF 進化標記:超級進化EX" }
+        ];
+
+        // --- 變數宣告 ---
+        let model = undefined;
+        let videoStream = null;
+        let animationId = null;
+        let lastPredictions = []; // 儲存最新的偵測結果
+
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('overlay');
         const ctx = canvas.getContext('2d');
 
-        let model = null;
+        // --- 頁面控制 ---
+        function showPage(pageId) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById(pageId).classList.add('active');
+        }
 
-        // --- JS 修改 1：啟動攝影機 ---
-        // 優先嘗試後置鏡頭 (environment)，如果失敗 (例如在桌機上) 再嘗試預設鏡頭
-        async function setupWebcam() {
-            const mobileConstraints = {
-                video: { 
-                    facingMode: 'environment' // 優先使用後置鏡頭
-                },
-                audio: false
-            };
-            const defaultConstraints = {
-                video: true,
-                audio: false
-            };
+        function goHome() {
+            stopWebcam();
+            showPage('home-page');
+        }
 
-            try {
-                // 優先嘗試手機的後置鏡頭
-                const stream = await navigator.mediaDevices.getUserMedia(mobileConstraints);
-                video.srcObject = stream;
-            } catch (err) {
-                console.warn("後置鏡頭啟動失敗, 嘗試預設鏡頭: ", err);
+        // --- 圖鑑功能 (不變) ---
+        function goToGallery() {
+            const grid = document.getElementById('gallery-grid');
+            if(grid.innerHTML === '') {
+                cardData.forEach(card => {
+                    const div = document.createElement('div');
+                    div.className = 'card-item';
+                    div.innerHTML = `<img src="${card.id}.png" alt="Card ${card.id}">`;
+                    div.onclick = () => openModal(card);
+                    grid.appendChild(div);
+                });
+            }
+            showPage('gallery-page');
+        }
+
+        function openModal(card) {
+            document.getElementById('modal-img-display').src = `${card.id}.png`;
+            document.getElementById('modal-desc').innerText = card.desc;
+            document.getElementById('modal').style.display = 'flex';
+        }
+        function closeModal() { document.getElementById('modal').style.display = 'none'; }
+
+        // --- COCO-SSD 核心邏輯 ---
+
+        async function initModel() {
+            if (!model) {
+                // 載入 COCO-SSD 模型
+                model = await cocoSsd.load();
+                console.log("COCO-SSD Model Loaded");
+                document.getElementById('loading-text').style.display = 'none';
+                document.getElementById('scan-btn').disabled = false;
+            }
+        }
+
+        async function goToScanner() {
+            showPage('scan-page');
+            document.getElementById('scan-btn').disabled = true;
+            document.getElementById('loading-text').style.display = 'block';
+
+            // 1. 啟動 WebCam (使用原生 API)
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                 try {
-                    // 嘗試預設 (可能是前置鏡頭或桌機鏡頭)
-                    const stream = await navigator.mediaDevices.getUserMedia(defaultConstraints);
-                    video.srcObject = stream;
-                } catch (err2) {
-                    console.error("無法啟動攝影機: ", err2);
-                    statusDisplay.innerHTML = `錯誤：無法啟動攝影機 (${err2.message})<br>請允許瀏覽器存取攝影機並重新整理。`;
-                    return; // 停止執行
+                    videoStream = await navigator.mediaDevices.getUserMedia({
+                        audio: false,
+                        video: { facingMode: "environment" } // 優先使用後鏡頭
+                    });
+                    video.srcObject = videoStream;
+                    
+                    // 等待影片 metadata 載入完畢以取得正確尺寸
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        // 設定 Canvas 尺寸與 Video 實際解析度一致
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        
+                        // 2. 載入模型並開始偵測
+                        initModel().then(() => {
+                            detectFrame();
+                        });
+                    };
+                } catch (err) {
+                    alert("無法存取相機，請確認權限或使用 HTTPS 連線。");
+                    console.error(err);
                 }
             }
-            
-            // 等待影像串流載入完成
-            return new Promise((resolve) => {
-                video.onloadedmetadata = () => {
-                    video.play();
-                    resolve();
-                };
+        }
+
+        function detectFrame() {
+            if (!model || video.paused || video.ended) return;
+
+            model.detect(video).then(predictions => {
+                lastPredictions = predictions; // 存下來供拍照用
+                renderPredictions(predictions);
+                animationId = requestAnimationFrame(detectFrame);
             });
         }
 
-        // 執行辨識的函式
-        async function runDetection() {
-            if (!model || !video.srcObject) return;
-
-            // --- JS 修改 2：座標縮放 ---
-            // 偵測模型需要影像的 "原始尺寸" (video.videoWidth)
-            // 但我們繪圖時需要 "顯示尺寸" (canvas.width)
-            // 所以我們需要計算縮放比例
-            const scaleX = canvas.width / video.videoWidth;
-            const scaleY = canvas.height / video.videoHeight;
-
-            // 1. 偵測影像中的物體
-            const predictions = await model.detect(video);
-
-            // 2. 清除上一次的繪製結果
+        function renderPredictions(predictions) {
+            // 清除畫布
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            // 3. 設定繪圖樣式
-            ctx.strokeStyle = "#00FF00";
-            ctx.lineWidth = 2;
-            ctx.fillStyle = "#00FF00";
-            ctx.font = "16px Arial";
-
-            // 4. 迭代所有預測結果並 *縮放* 繪製
-            predictions.forEach(prediction => {
-                // 取得原始座標
-                const [x, y, width, height] = prediction.bbox;
-
-                // --- JS 修改 3：套用縮放比例 ---
-                const scaledX = x * scaleX;
-                const scaledY = y * scaleY;
-                const scaledWidth = width * scaleX;
-                const scaledHeight = height * scaleY;
-
-                // 由於影像水平翻轉了，我們也必須翻轉 canvas 的 X 座標
-                const flippedX = canvas.width - scaledX - scaledWidth;
-
-                // 繪製框框 (使用縮放後的座標)
-                ctx.strokeRect(flippedX, scaledY, scaledWidth, scaledHeight);
-                
-                // 繪製標籤
-                const label = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
-                ctx.fillText(label, flippedX + 5, scaledY + 20);
-            });
-
-            // 5. 循環執行
-            requestAnimationFrame(runDetection);
-        }
-
-        // --- JS 修改 4：設定 Canvas 尺寸與 RWD ---
-        // 這個函式用來設定 canvas 的繪圖緩衝區尺寸
-        // 必須符合 video "顯示" 在螢幕上的尺寸
-        function resizeCanvas() {
-            if (!video.srcObject) return;
             
-            // 讓 canvas 的畫布大小 = video 在網頁上顯示的大小
-            canvas.width = video.clientWidth;
-            canvas.height = video.clientHeight;
-            console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
-        }
-
-        // --- 主程式執行 ---
-        async function main() {
-            // 1. 載入 COCO-SSD 模型
-            statusDisplay.innerHTML = "正在載入 COCO-SSD 模型...";
-            try {
-                model = await cocoSsd.load();
-            } catch (err) {
-                console.error("載入模型失敗: ", err);
-                statusDisplay.innerHTML = "錯誤：載入模型失敗。";
-                return;
+            // 確保 Canvas 尺寸跟隨 Video (響應式視窗調整)
+            if(canvas.width !== video.videoWidth || canvas.height !== video.videoHeight){
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
             }
 
-            // 2. 啟動攝影機
-            statusDisplay.innerHTML = "正在啟動攝影機...";
-            await setupWebcam();
-            
-            // 如果 setupWebcam 失敗 (e.g. video.srcObject 是 null), 就不繼續
-            if (!video.srcObject) return; 
+            const font = "16px sans-serif";
+            ctx.font = font;
+            ctx.textBaseline = "top";
 
-            // 3. 設定 canvas 尺寸
-            // 確保 video 載入完成後再設定
-            resizeCanvas();
+            predictions.forEach(prediction => {
+                const [x, y, width, height] = prediction.bbox;
+                const text = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
 
-            // --- JS 修改 5：新增 resize 事件監聽 ---
-            // 當使用者旋轉手機或改變視窗大小時，重新調整 canvas 尺寸
-            window.addEventListener("resize", resizeCanvas);
+                // 1. 畫框框
+                ctx.strokeStyle = "#00FFFF";
+                ctx.lineWidth = 4;
+                ctx.strokeRect(x, y, width, height);
+
+                // 2. 畫文字背景
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillStyle = "#00FFFF";
+                ctx.fillRect(x, y, textWidth + 8, 24);
+
+                // 3. 畫文字
+                ctx.fillStyle = "#000000";
+                ctx.fillText(text, x + 4, y + 4);
+            });
             
-            // 4. 隱藏狀態訊息，開始執行辨識
-            statusDisplay.style.display = 'none';
-            runDetection();
+            // 更新狀態文字
+            const statusDiv = document.getElementById('status-text');
+            if (predictions.length > 0) {
+                statusDiv.innerText = `偵測到: ${predictions.map(p => p.class).join(', ')}`;
+            } else {
+                statusDiv.innerText = "搜尋物件中...";
+            }
         }
 
-        // 啟動主程式
-        main();
+        function stopWebcam() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+        }
+        
+        function stopWebcamAndGoHome() {
+            stopWebcam();
+            goHome();
+        }
+
+        // --- 拍照與結果呈現 ---
+        function captureAndResult() {
+            // 1. 暫停偵測 loop
+            if (animationId) cancelAnimationFrame(animationId);
+            
+            // 2. 將目前的 Video + Canvas 畫框 合成為一張圖
+            // 這裡為了簡單，我們創建一個暫時的 canvas 來合併
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // 畫入影片當前影格
+            tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            // 畫入當前的框框 (從 overlay canvas 複製)
+            tempCtx.drawImage(canvas, 0, 0);
+
+            // 轉成圖片 URL
+            const dataURL = tempCanvas.toDataURL('image/png');
+            document.getElementById('result-snapshot').src = dataURL;
+
+            // 3. 顯示偵測文字結果
+            const resultList = document.getElementById('result-list');
+            if (lastPredictions.length > 0) {
+                const listItems = lastPredictions.map(p => 
+                    `<li><strong>${p.class}</strong>: ${Math.round(p.score*100)}% 信心</li>`
+                ).join('');
+                resultList.innerHTML = `<ul>${listItems}</ul>`;
+            } else {
+                resultList.innerHTML = "<p>畫面中未偵測到已知物件。</p>";
+            }
+
+            // 4. 停止相機並切換頁面
+            stopWebcam();
+            showPage('result-page');
+        }
     </script>
 </body>
 </html>
